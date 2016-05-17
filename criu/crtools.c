@@ -56,7 +56,6 @@ void init_opts(void)
 	opts.final_state = TASK_DEAD;
 	INIT_LIST_HEAD(&opts.ext_unixsk_ids);
 	INIT_LIST_HEAD(&opts.veth_pairs);
-	INIT_LIST_HEAD(&opts.scripts);
 	INIT_LIST_HEAD(&opts.ext_mounts);
 	INIT_LIST_HEAD(&opts.inherit_fds);
 	INIT_LIST_HEAD(&opts.external);
@@ -69,34 +68,6 @@ void init_opts(void)
 	opts.ghost_limit = DEFAULT_GHOST_LIMIT;
 	opts.timeout = DEFAULT_TIMEOUT;
 	opts.empty_ns = 0;
-}
-
-static int parse_ns_string(const char *ptr)
-{
-	const char *end = ptr + strlen(ptr);
-
-	do {
-		if (ptr[3] != ',' && ptr[3] != '\0')
-			goto bad_ns;
-		if (!strncmp(ptr, "uts", 3))
-			opts.rst_namespaces_flags |= CLONE_NEWUTS;
-		else if (!strncmp(ptr, "ipc", 3))
-			opts.rst_namespaces_flags |= CLONE_NEWIPC;
-		else if (!strncmp(ptr, "mnt", 3))
-			opts.rst_namespaces_flags |= CLONE_NEWNS;
-		else if (!strncmp(ptr, "pid", 3))
-			opts.rst_namespaces_flags |= CLONE_NEWPID;
-		else if (!strncmp(ptr, "net", 3))
-			opts.rst_namespaces_flags |= CLONE_NEWNET;
-		else
-			goto bad_ns;
-		ptr += 4;
-	} while (ptr < end);
-	return 0;
-
-bad_ns:
-	pr_msg("Error: unknown namespace: %s\n", ptr);
-	return -1;
 }
 
 static int parse_cpu_cap(struct cr_options *opts, const char *optarg)
@@ -218,7 +189,7 @@ int main(int argc, char *argv[], char *envp[])
 	int log_level = LOG_UNSET;
 	char *imgs_dir = ".";
 	char *work_dir = NULL;
-	static const char short_opts[] = "dSsRf:F:t:p:hcD:o:n:v::x::Vr:jlW:L:M:";
+	static const char short_opts[] = "dSsRf:F:t:p:hcD:o:v::x::Vr:jlW:L:M:";
 	static struct option long_opts[] = {
 		{ "tree",			required_argument,	0, 't'	},
 		{ "pid",			required_argument,	0, 'p'	},
@@ -233,7 +204,6 @@ int main(int argc, char *argv[], char *envp[])
 		{ "images-dir",			required_argument,	0, 'D'	},
 		{ "work-dir",			required_argument,	0, 'W'	},
 		{ "log-file",			required_argument,	0, 'o'	},
-		{ "namespaces",			required_argument,	0, 'n'	},
 		{ "root",			required_argument,	0, 'r'	},
 		{ USK_EXT_PARAM,		optional_argument,	0, 'x'	},
 		{ "help",			no_argument,		0, 'h'	},
@@ -365,10 +335,6 @@ int main(int argc, char *argv[], char *envp[])
 		case 'o':
 			opts.output = optarg;
 			break;
-		case 'n':
-			if (parse_ns_string(optarg))
-				goto bad_arg;
-			break;
 		case 'v':
 			if (log_level == LOG_UNSET)
 				log_level = 0;
@@ -420,7 +386,7 @@ int main(int argc, char *argv[], char *envp[])
 			}
 			break;
 		case 1049:
-			if (add_script(optarg, 0))
+			if (add_script(optarg))
 				return 1;
 
 			break;

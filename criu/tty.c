@@ -15,6 +15,7 @@
 #include "compiler.h"
 #include "asm/types.h"
 
+#include "crtools.h"
 #include "files.h"
 #include "cr_options.h"
 #include "imgset.h"
@@ -209,6 +210,12 @@ static struct tty_driver ext_driver = {
 	.open			= open_ext_tty,
 };
 
+static struct tty_driver serial_driver = {
+	.type			= TTY_TYPE__SERIAL,
+	.name			= "serial",
+	.open			= open_simple_tty,
+};
+
 static int pts_fd_get_index(int fd, const struct fd_parms *p)
 {
 	int index;
@@ -260,13 +267,18 @@ struct tty_driver *get_tty_driver(dev_t rdev, dev_t dev)
 			return &ctty_driver;
 		break;
 	case TTY_MAJOR:
-		if (minor > MIN_NR_CONSOLES && minor < MAX_NR_CONSOLES)
+		if (minor >= MIN_NR_CONSOLES && minor <= MAX_NR_CONSOLES)
 			/*
 			 * Minors [MIN_NR_CONSOLES; MAX_NR_CONSOLES] stand
 			 * for consoles (virtual terminals, VT in terms
 			 * of kernel).
 			 */
 			return &vt_driver;
+		/* Other minors points to UART serial ports */
+		break;
+	case USB_SERIAL_MAJOR:
+	case LOW_DENSE_SERIAL_MAJOR:
+		return &serial_driver;
 	case UNIX98_PTY_MASTER_MAJOR ... (UNIX98_PTY_MASTER_MAJOR + UNIX98_PTY_MAJOR_COUNT - 1):
 		return &ptm_driver;
 	case UNIX98_PTY_SLAVE_MAJOR:
@@ -667,6 +679,7 @@ static bool tty_is_master(struct tty_info *info)
 	case TTY_TYPE__CONSOLE:
 	case TTY_TYPE__CTTY:
 		return true;
+	case TTY_TYPE__SERIAL:
 	case TTY_TYPE__VT:
 		if (!opts.shell_job)
 			return true;
@@ -1221,7 +1234,7 @@ static int tty_setup_orphan_slavery(void)
 	return 0;
 }
 
-int tty_setup_slavery(void)
+static int tty_setup_slavery(void * unused)
 {
 	struct tty_info *info, *peer, *m;
 
@@ -1351,7 +1364,7 @@ static TtyInfoEntry *lookup_tty_info_entry(u32 id)
 	return NULL;
 }
 
-static int collect_one_tty_info_entry(void *obj, ProtobufCMessage *msg)
+static int collect_one_tty_info_entry(void *obj, ProtobufCMessage *msg, struct cr_img *i)
 {
 	struct tty_info_entry *info = obj;
 
@@ -1367,6 +1380,7 @@ static int collect_one_tty_info_entry(void *obj, ProtobufCMessage *msg)
 		break;
 	case TTY_TYPE__CTTY:
 	case TTY_TYPE__CONSOLE:
+	case TTY_TYPE__SERIAL:
 	case TTY_TYPE__VT:
 	case TTY_TYPE__EXT_TTY:
 		if (info->tie->pty) {
@@ -1394,7 +1408,7 @@ struct collect_image_info tty_info_cinfo = {
 	.collect	= collect_one_tty_info_entry,
 };
 
-static int collect_one_tty(void *obj, ProtobufCMessage *msg)
+static int collect_one_tty(void *obj, ProtobufCMessage *msg, struct cr_img *i)
 {
 	struct tty_info *info = obj;
 
@@ -1451,6 +1465,15 @@ static int collect_one_tty(void *obj, ProtobufCMessage *msg)
 		tty_test_and_set(info->tfe->tty_info_id, tty_active_pairs);
 
 	pr_info("Collected tty ID %#x (%s)\n", info->tfe->id, info->driver->name);
+
+	if (list_empty(&all_ttys))
+		/*
+		 * XXX -- not every tty requires this.
+		 * Check that we have such here and queue
+		 * post-cb only if required.
+		 */
+		if (add_post_prepare_cb(tty_setup_slavery, NULL))
+			return -1;
 
 	list_add(&info->list, &all_ttys);
 	return file_desc_add(&info->d, info->tfe->id, &tty_desc_ops);

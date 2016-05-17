@@ -8,7 +8,7 @@ CFLAGS			+= $(USERCFLAGS)
 
 # here is a workaround for a bug in libnl-3:
 # 6a8d90f5fec4 "attr: Allow attribute type 0" 
-LDFLAGS			+= -Wl,--wrap=nla_parse,--wrap=nlmsg_parse
+WRAPFLAGS		+= -Wl,--wrap=nla_parse,--wrap=nlmsg_parse
 
 export HOSTCC HOSTLD HOSTCFLAGS
 
@@ -177,7 +177,7 @@ built-in.o: pie
 
 criu: $(PROGRAM-BUILTINS)
 	$(call msg-link, $@)
-	$(Q) $(CC) $(CFLAGS) $^ $(ARCH-LIB) $(LIBS) $(LDFLAGS) $(GMONLDOPT) -rdynamic -o $@
+	$(Q) $(CC) $(CFLAGS) $^ $(ARCH-LIB) $(LIBS) $(WRAPFLAGS) $(LDFLAGS) $(GMONLDOPT) -rdynamic -o $@
 
 
 subclean:
@@ -192,6 +192,7 @@ subclean:
 # Clean the most, except generated c files
 clean: subclean
 	$(Q) $(MAKE) $(call build-as,Makefile.syscalls,$(ARCH_DIR)) $@
+	$(Q) $(MAKE) $(call build-as,Makefile,$(ARCH_DIR)) $@
 	$(Q) $(MAKE) $(call build-as,Makefile.library,pie) $@
 	$(Q) $(MAKE) $(call build-as,Makefile.crtools,.) $@
 	$(Q) $(MAKE) $(build)=pie/piegen $@
@@ -202,6 +203,7 @@ clean: subclean
 # Delete all generated files
 mrproper: subclean
 	$(Q) $(MAKE) $(call build-as,Makefile.syscalls,$(ARCH_DIR)) $@
+	$(Q) $(MAKE) $(call build-as,Makefile,$(ARCH_DIR)) $@
 	$(Q) $(MAKE) $(call build-as,Makefile.library,pie) $@
 	$(Q) $(MAKE) $(call build-as,Makefile.crtools,.) $@
 	$(Q) $(MAKE) $(build)=pie/piegen $@
@@ -219,6 +221,12 @@ install: criu
 	$(Q) mkdir -p $(DESTDIR)$(INCLUDEDIR)
 	$(Q) install -m 644 $(UAPI_HEADERS) $(DESTDIR)$(INCLUDEDIR)
 .PHONY: install
+
+uninstall:
+	$(E) " UNINSTALL" criu
+	$(Q) $(RM) $(addprefix $(DESTDIR)$(SBINDIR)/,criu)
+	$(Q) $(RM) $(addprefix $(DESTDIR)$(INCLUDEDIR)/,$(notdir $(UAPI_HEADERS)))
+.PHONY: uninstall
 
 #
 # Final @all target.

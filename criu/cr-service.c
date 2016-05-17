@@ -360,8 +360,7 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 		}
 	}
 
-	if (req->notify_scripts &&
-			add_script(SCRIPT_RPC_NOTIFY, sk))
+	if (req->notify_scripts && add_rpc_notify(sk))
 		goto err;
 
 	for (i = 0; i < req->n_veths; i++) {
@@ -955,8 +954,8 @@ static void reap_worker(int signo)
 			pr_info("Worker(pid %d) exited with %d\n",
 				pid, WEXITSTATUS(status));
 		else if (WIFSIGNALED(status))
-			pr_info("Worker(pid %d) was killed by %d\n",
-				pid, WTERMSIG(status));
+			pr_info("Worker(pid %d) was killed by %d: %s\n", pid,
+				WTERMSIG(status), strsignal(WTERMSIG(status)));
 	}
 }
 

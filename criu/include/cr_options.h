@@ -71,7 +71,6 @@ struct cr_options {
 	bool			tcp_established_ok;
 	bool			evasive_devices;
 	bool			link_remap_ok;
-	unsigned int		rst_namespaces_flags;
 	bool			log_file_per_pid;
 	bool			swrk_restore;
 	char			*output;
@@ -79,7 +78,6 @@ struct cr_options {
 	char			*pidfile;
 	char			*freeze_cgroup;
 	struct list_head	veth_pairs;
-	struct list_head	scripts;
 	struct list_head	ext_mounts;
 	struct list_head	inherit_fds;
 	struct list_head	external;

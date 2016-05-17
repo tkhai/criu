@@ -135,6 +135,7 @@ TST_NOFILE	=				\
 		remap_dead_pid			\
 		remap_dead_pid_root			\
 		aio00				\
+		aio01				\
 		fd				\
 		apparmor				\
 		seccomp_strict			\
@@ -218,6 +219,7 @@ TST_DIR		=				\
 		cgroup02			\
 		cgroup03			\
 		cgroup_stray		\
+		unlink_fstat04			\
 		mntns_open			\
 		mntns_link_remap		\
 		mntns_link_ghost		\
@@ -229,12 +231,12 @@ TST_DIR		=				\
 		mnt_ext_auto			\
 		mnt_ext_master			\
 		mntns_deleted			\
-		binfmt_misc			\
 		unlink_regular00		\
 
 TST_DIR_FILE	=				\
 		chroot				\
-		chroot-file
+		chroot-file			\
+		binfmt_misc			\
 
 TST		=				\
 		$(TST_NOFILE)			\
@@ -375,6 +377,7 @@ maps02:		get_smaps_bits.o
 mlock_setuid:		get_smaps_bits.o
 inotify01:		override CFLAGS += -DINOTIFY01
 unlink_fstat01+:	override CFLAGS += -DUNLINK_OVER
+unlink_fstat04:		override CFLAGS += -DUNLINK_FSTAT04
 sk-freebind-false:	override CFLAGS += -DZDTM_FREEBIND_FALSE
 stopped01:	override CFLAGS += -DZDTM_STOPPED_KILL
 stopped02:	override CFLAGS += -DZDTM_STOPPED_TKILL

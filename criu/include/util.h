@@ -79,7 +79,7 @@ extern int do_open_proc(pid_t pid, int flags, const char *fmt, ...);
 	({								\
 		int __fd = do_open_proc(pid, flags,			\
 					fmt, ##__VA_ARGS__);		\
-		if (__fd < 0 && (errno != ier))				\
+		if (__fd < 0 && (errno != (ier)))			\
 			pr_perror("Can't open %d/" fmt " on procfs",	\
 					pid, ##__VA_ARGS__);		\
 									\
@@ -282,5 +282,9 @@ char *xsprintf(const char *fmt, ...)
 	__attribute__ ((__format__ (__printf__, 1, 2)));
 
 void print_data(unsigned long addr, unsigned char *data, size_t size);
+
+int setup_tcp_server(char *type);
+int run_tcp_server(bool daemon_mode, int *ask, int cfd, int sk);
+int setup_tcp_client(char *addr);
 
 #endif /* __CR_UTIL_H__ */

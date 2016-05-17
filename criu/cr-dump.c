@@ -184,10 +184,11 @@ static int dump_sched_info(int pid, ThreadCoreEntry *tc)
 
 struct cr_imgset *glob_imgset;
 
-static int collect_fds(pid_t pid, struct parasite_drain_fd *dfds)
+static int collect_fds(pid_t pid, struct parasite_drain_fd **dfds)
 {
 	struct dirent *de;
 	DIR *fd_dir;
+	int size = 0;
 	int n;
 
 	pr_info("\n");
@@ -203,13 +204,20 @@ static int collect_fds(pid_t pid, struct parasite_drain_fd *dfds)
 		if (dir_dots(de))
 			continue;
 
-		if (n > PARASITE_MAX_FDS - 1)
-			return -ENOMEM;
+		if (sizeof(struct parasite_drain_fd) + sizeof(int) * (n + 1) > size) {
+			struct parasite_drain_fd *t;
 
-		dfds->fds[n++] = atoi(de->d_name);
+			size += PAGE_SIZE;
+			t = xrealloc(*dfds, size);
+			if (!t)
+				return -1;
+			*dfds = t;
+		}
+
+		(*dfds)->fds[n++] = atoi(de->d_name);
 	}
 
-	dfds->nr_fds = n;
+	(*dfds)->nr_fds = n;
 	pr_info("Found %d file descriptors\n", n);
 	pr_info("----------------------------------------\n");
 
@@ -307,9 +315,9 @@ static int dump_task_rlimits(int pid, TaskRlimitsEntry *rls)
 	int res;
 
 	for (res = 0; res <rls->n_rlimits ; res++) {
-		struct rlimit lim;
+		struct rlimit64 lim;
 
-		if (prlimit(pid, res, NULL, &lim)) {
+		if (syscall(__NR_prlimit64, pid, res, NULL, &lim)) {
 			pr_perror("Can't get rlimit %d", res);
 			return -1;
 		}
@@ -1208,7 +1216,7 @@ static int dump_one_task(struct pstree_item *item)
 		if (!dfds)
 			goto err;
 
-		ret = collect_fds(pid, dfds);
+		ret = collect_fds(pid, &dfds);
 		if (ret) {
 			pr_err("Collect fds (pid: %d) failed with %d\n", pid, ret);
 			goto err;
@@ -1263,7 +1271,7 @@ static int dump_one_task(struct pstree_item *item)
 		goto err_cure_imgset;
 	}
 
-	ret = parasite_check_aios(parasite_ctl, &vmas); /* FIXME -- merge with above */
+	ret = parasite_collect_aios(parasite_ctl, &vmas); /* FIXME -- merge with above */
 	if (ret) {
 		pr_err("Failed to check aio rings (pid: %d)\n", pid);
 		goto err_cure_imgset;

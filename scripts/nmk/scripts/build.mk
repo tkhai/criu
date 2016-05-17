@@ -4,6 +4,7 @@ ifndef ____nmk_defined__build
 # General helpers for simplified Makefiles.
 #
 src		:= $(obj)
+src-makefile	:= $(call objectify,$(makefile))
 obj-y		:=
 lib-y		:=
 target          :=
@@ -14,6 +15,8 @@ lib-name	:=
 ld_flags	:=
 cleanup-y	:=
 mrproper-y	:=
+objdirs		:=
+libso-y	        :=
 
 MAKECMDGOALS := $(call uniq,$(MAKECMDGOALS))
 
@@ -21,7 +24,46 @@ ifndef obj
         $(error obj is undefined)
 endif
 
-src-makefile	:= $(call objectify,$(makefile))
+#
+# Accumulate common flags.
+define nmk-ccflags
+        $(CFLAGS) $(ccflags-y) $(CFLAGS_$(@F))
+endef
+
+define nmk-asflags
+        $(CFLAGS) $(AFLAGS) $(asflags-y) $(AFLAGS_$(@F))
+endef
+
+define nmk-host-ccflags
+        $(HOSTCFLAGS) $(host-ccflags-y) $(HOSTCFLAGS_$(@F))
+endef
+
+#
+# General rules.
+define gen-cc-rules
+$(1).o: $(2).c $(src-makefile)
+	$$(call msg-cc, $$@)
+	$$(Q) $$(CC) -c $$(strip $$(nmk-ccflags)) $$< -o $$@
+$(1).i: $(2).c $(src-makefile)
+	$$(call msg-cc, $$@)
+	$$(Q) $$(CC) -E $$(strip $$(nmk-ccflags)) $$< -o $$@
+$(1).s: $(2).c $(src-makefile)
+	$$(call msg-cc, $$@)
+	$$(Q) $$(CC) -S -fverbose-asm $$(strip $$(nmk-ccflags)) $$< -o $$@
+$(1).d: $(2).c $(src-makefile)
+	$$(call msg-dep, $$@)
+	$$(Q) $$(CC) -M -MT $$@ -MT $$(patsubst %.d,%.o,$$@) $$(strip $$(nmk-ccflags)) $$< -o $$@
+$(1).o: $(2).S $(src-makefile)
+	$$(call msg-cc, $$@)
+	$$(Q) $$(CC) -c $$(strip $$(nmk-asflags)) $$< -o $$@
+$(1).i: $(2).S $(src-makefile)
+	$$(call msg-cc, $$@)
+	$$(Q) $$(CC) -E $$(strip $$(nmk-asflags)) $$< -o $$@
+$(1).d: $(2).S $(src-makefile)
+	$$(call msg-dep, $$@)
+	$$(Q) $$(CC) -M -MT $$@ -MT $$(patsubst %.d,%.o,$$@) $$(strip $$(nmk-asflags)) $$< -o $$@
+endef
+
 include $(src-makefile)
 
 ifneq ($(strip $(target)),)
@@ -49,13 +91,7 @@ ld_flags	:= $(strip $(LDFLAGS) $(ldflags-y))
 
 #
 # $(obj) related rules.
-$(eval $(call gen-rule-o-from-c-by-name,$(obj)/%,$(obj)/%,$(src-makefile)))
-$(eval $(call gen-rule-i-from-c-by-name,$(obj)/%,$(obj)/%,$(src-makefile)))
-$(eval $(call gen-rule-s-from-c-by-name,$(obj)/%,$(obj)/%,$(src-makefile)))
-$(eval $(call gen-rule-o-from-S-by-name,$(obj)/%,$(obj)/%,$(src-makefile)))
-$(eval $(call gen-rule-d-from-c-by-name,$(obj)/%,$(obj)/%,$(src-makefile)))
-$(eval $(call gen-rule-d-from-S-by-name,$(obj)/%,$(obj)/%,$(src-makefile)))
-$(eval $(call gen-rule-i-from-S-by-name,$(obj)/%,$(obj)/%,$(src-makefile)))
+$(eval $(call gen-cc-rules,$(obj)/%,$(obj)/%))
 
 #
 # Prepare targets.
@@ -69,6 +105,7 @@ ifneq ($(lib-y),)
         cleanup-y += $(call cleanify,$(lib-y))
         cleanup-y += $(lib-target)
         all-y += $(lib-target)
+        objdirs += $(dir $(lib-y))
 endif
 
 ifneq ($(obj-y),)
@@ -81,6 +118,7 @@ ifneq ($(obj-y),)
         cleanup-y += $(call cleanify,$(obj-y))
         cleanup-y += $(builtin-target)
         all-y += $(builtin-target)
+        objdirs += $(dir $(obj-y))
 endif
 
 #
@@ -129,6 +167,7 @@ define gen-custom-target-rule
                 all-y += $(obj)/$(1).built-in.o
                 cleanup-y += $(call cleanify,$(call objectify,$($(1)-obj-y)))
                 cleanup-y += $(obj)/$(1).built-in.o
+                objdirs += $(dir $(call objectify,$($(1)-obj-y)))
         endif
         ifneq ($($(1)-lib-y),)
                 $(eval $(call gen-ar-target-rule,                       \
@@ -141,10 +180,56 @@ define gen-custom-target-rule
                 all-y += $(obj)/$(1).lib.a
                 cleanup-y += $(call cleanify,$(call objectify,$($(1)-lib-y)))
                 cleanup-y += $(obj)/$(1).lib.a
+                objdirs += $(dir $(call objectify,$($(1)-lib-y)))
         endif
 endef
 
 $(foreach t,$(target),$(eval $(call gen-custom-target-rule,$(t))))
+
+#
+# Prepare rules for dirs other than (obj)/.
+objdirs := $(patsubst %/,%,$(filter-out $(obj)/,$(call uniq,$(objdirs))))
+$(foreach t,$(objdirs),$(eval $(call gen-cc-rules,$(t)/%,$(t)/%)))
+
+#
+# Host programs.
+define gen-host-cc-rules
+$(addprefix $(obj)/,$(1)): $(obj)/%.o: $(obj)/%.c $(src-makefile)
+	$$(call msg-host-cc, $$@)
+	$$(Q) $$(HOSTCC) -c $$(strip $$(nmk-host-ccflags)) $$< -o $$@
+$(patsubst %.o,%.i,$(addprefix $(obj)/,$(1))): $(obj)/%.i: $(obj)/%.c $(src-makefile)
+	$$(call msg-host-cc, $$@)
+	$$(Q) $$(HOSTCC) -E $$(strip $$(nmk-host-ccflags)) $$< -o $$@
+$(patsubst %.o,%.s,$(addprefix $(obj)/,$(1))): $(obj)/%.s: $(obj)/%.c $(src-makefile)
+	$$(call msg-host-cc, $$@)
+	$$(Q) $$(HOSTCC) -S -fverbose-asm $$(strip $$(nmk-host-ccflags)) $$< -o $$@
+$(patsubst %.o,%.d,$(addprefix $(obj)/,$(1))): $(obj)/%.d: $(obj)/%.c $(src-makefile)
+	$$(call msg-host-dep, $$@)
+	$$(Q) $$(HOSTCC) -M -MT $$@ -MT $$(patsubst %.d,%.o,$$@) $$(strip $$(nmk-host-ccflags)) $$< -o $$@
+endef
+
+define gen-host-rules
+        $(eval $(call gen-host-cc-rules,$($(1)-objs)))
+        all-y += $(addprefix $(obj)/,$($(1)-objs))
+        cleanup-y += $(call cleanify,$(addprefix $(obj)/,$($(1)-objs)))
+$(obj)/$(1): $(addprefix $(obj)/,$($(1)-objs)) $(src-makefile)
+	$$(call msg-host-link, $$@)
+	$$(Q) $$(HOSTCC) $$(HOSTCFLAGS) $(addprefix $(obj)/,$($(1)-objs)) $$(HOSTLDFLAGS) $$(HOSTLDFLAGS_$$(@F))-o $$@
+all-y += $(obj)/$(1)
+cleanup-y += $(obj)/$(1)
+endef
+$(foreach t,$(hostprogs-y),$(eval $(call gen-host-rules,$(t))))
+
+#
+# Dynamic library linking.
+define gen-so-link-rules
+$(call objectify,$(1)).so:  $(call objectify,$($(1)-objs)) $(src-makefile)
+	$$(call msg-link, $$@)
+	$$(Q) $$(CC) -shared $$(ldflags-so) $$(LDFLAGS) $$(LDFLAGS_$$(@F)) -o $$@ $(call objectify,$($(1)-objs))
+all-y += $(call objectify,$(1)).so
+cleanup-y += $(call objectify,$(1)).so
+endef
+$(foreach t,$(libso-y),$(eval $(call gen-so-link-rules,$(t))))
 
 #
 # Figure out if the target we're building needs deps to include.
@@ -160,10 +245,11 @@ define collect-deps
         ifeq ($(lib-target),$(1))
                 deps-y += $(lib-y:.o=.d)
         endif
-        ifneq ($(filter all $(all-y) $(target),$(1)),)
+        ifneq ($(filter all $(all-y) $(hostprogs-y),$(1)),)
                 deps-y += $(obj-y:.o=.d)
                 deps-y += $(lib-y:.o=.d)
-                deps-y += $(foreach t,$(target),$($(t)-lib-y:.o=.d) $($(t)-obj-y:.o=.d))
+                deps-y += $(foreach t,$(target),$(call objectify,$($(t)-lib-y:.o=.d)) $(call objectify,$($(t)-obj-y:.o=.d)))
+                deps-y += $(foreach t,$(hostprogs-y),$(addprefix $(obj)/,$($(t)-objs:.o=.d)))
         endif
 endef
 

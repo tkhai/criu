@@ -163,7 +163,7 @@ static char *alloc_openable(unsigned int s_dev, unsigned long i_ino, FhEntry *f_
 		openable_fd = openat(mntfd, __path, O_PATH);
 		if (openable_fd >= 0) {
 			if (fstat(openable_fd, &st)) {
-				pr_perror("Can't stat on %s\n", __path);
+				pr_perror("Can't stat on %s", __path);
 				close(openable_fd);
 				return ERR_PTR(-errno);
 			}
@@ -828,7 +828,7 @@ static int collect_fanotify_mark(struct fsnotify_mark_info *mark)
 	return -1;
 }
 
-static int collect_one_inotify(void *o, ProtobufCMessage *msg)
+static int collect_one_inotify(void *o, ProtobufCMessage *msg, struct cr_img *img)
 {
 	struct fsnotify_file_info *info = o;
 	int i;
@@ -863,7 +863,7 @@ struct collect_image_info inotify_cinfo = {
 	.collect	= collect_one_inotify,
 };
 
-static int collect_one_fanotify(void *o, ProtobufCMessage *msg)
+static int collect_one_fanotify(void *o, ProtobufCMessage *msg, struct cr_img *img)
 {
 	struct fsnotify_file_info *info = o;
 	int i;
@@ -898,7 +898,7 @@ struct collect_image_info fanotify_cinfo = {
 	.collect	= collect_one_fanotify,
 };
 
-static int collect_one_inotify_mark(void *o, ProtobufCMessage *msg)
+static int collect_one_inotify_mark(void *o, ProtobufCMessage *msg, struct cr_img *i)
 {
 	struct fsnotify_mark_info *mark = o;
 
@@ -926,7 +926,7 @@ struct collect_image_info inotify_mark_cinfo = {
 	.collect	= collect_one_inotify_mark,
 };
 
-static int collect_one_fanotify_mark(void *o, ProtobufCMessage *msg)
+static int collect_one_fanotify_mark(void *o, ProtobufCMessage *msg, struct cr_img *i)
 {
 	struct fsnotify_mark_info *mark = o;
 

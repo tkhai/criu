@@ -6,8 +6,11 @@ enum faults {
 	FI_NONE = 0,
 	FI_DUMP_EARLY,
 	FI_RESTORE_ROOT_ONLY,
+	FI_DUMP_PAGES,
 	/* not fatal */
 	FI_CHECK_OPEN_HANDLE = 128,
+	FI_NO_MEMFD = 129,
+	FI_NO_BREAKPOINTS = 130,
 	FI_MAX,
 };
 

@@ -24,23 +24,6 @@
 #include "syscall-codes.h"
 
 struct kerndat_s kdat = {
-	/*
-	 * TCP send receive buffers are calculated
-	 * dynamically by the kernel taking into account
-	 * the size of memory present on the machine.
-	 *
-	 * On machines with huge amount of memory it grants
-	 * up to 4M for sendding buffer and 6M for receiving.
-	 * But in turn for low mem machines these limits
-	 * are quite small down to 16K for sending and
-	 * 87380 for receiving.
-	 *
-	 * We will find out precise limits in tcp_read_sysctl_limits
-	 * but by default lets stick for small data to not fail
-	 * on restore: better to slowdown restore procedure than
-	 * failing completely.
-	 */
-	.tcp_max_rshare = 87380,
 };
 
 static int check_pagemap(void)
@@ -305,49 +288,17 @@ no_dt:
 	return 0;
 }
 
-/*
- * Strictly speaking, if there is a machine with huge amount
- * of memory, we're allowed to send up to 4M and read up to
- * 6M of tcp data at once. But we will figure out precise size
- * of a limit a bit later when restore starts.
- *
- * Meanwhile set it up to 2M and 3M, which is safe enough to
- * proceed without errors.
- */
-
-static int tcp_read_sysctl_limits(void)
-{
-	u32 vect[3] = { };
-	int ret;
-
-	struct sysctl_req req[] = {
-		{ "net/ipv4/tcp_rmem", &vect, CTL_U32A(ARRAY_SIZE(vect)), CTL_FLAGS_OPTIONAL },
-	};
-
-	/*
-	 * Lets figure out which exactly amount of memory is
-	 * availabe for send/read queues on restore.
-	 */
-	ret = sysctl_op(req, ARRAY_SIZE(req), CTL_READ, 0);
-	if (ret || vect[0] == 0) {
-		pr_warn("TCP mem sysctls are not available. Using defaults.\n");
-		goto out;
-	}
-
-	kdat.tcp_max_rshare = min(kdat.tcp_max_rshare, (int)vect[2]);
-
-	if (kdat.tcp_max_rshare < 128)
-		pr_warn("The memory limits for TCP queues are suspiciously small\n");
-out:
-	pr_debug("TCP recv queue memory limit is %d\n", kdat.tcp_max_rshare);
-	return 0;
-}
-
 /* The page frame number (PFN) is constant for the zero page */
 static int init_zero_page_pfn()
 {
 	void *addr;
-	int ret;
+	int ret = 0;
+
+	kdat.zero_page_pfn = -1;
+	if (kdat.pmap != PM_FULL) {
+		pr_info("Zero page detection failed, optimization turns off.\n");
+		return 0;
+	}
 
 	addr = mmap(NULL, PAGE_SIZE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (addr == MAP_FAILED) {
@@ -358,11 +309,6 @@ static int init_zero_page_pfn()
 	if (*((int *) addr) != 0) {
 		BUG();
 		return -1;
-	}
-
-	if (kdat.pmap != PM_FULL) {
-		pr_info("Zero page detection failed, optimization turns off.\n");
-		return 0;
 	}
 
 	ret = vaddr_to_pfn((unsigned long)addr, &kdat.zero_page_pfn);
@@ -476,7 +422,7 @@ int kerndat_loginuid(bool only_dump)
 	kdat.has_loginuid = false;
 
 	/* No such file: CONFIG_AUDITSYSCALL disabled */
-	saved_loginuid = parse_pid_loginuid(getpid(), &ret, true);
+	saved_loginuid = parse_pid_loginuid(PROC_SELF, &ret, true);
 	if (ret < 0)
 		return 0;
 
@@ -538,8 +484,6 @@ int kerndat_init_rst(void)
 	 */
 
 	ret = check_pagemap();
-	if (!ret)
-		ret = tcp_read_sysctl_limits();
 	if (!ret)
 		ret = get_last_cap();
 	if (!ret)

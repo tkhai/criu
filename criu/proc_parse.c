@@ -327,7 +327,7 @@ static int vma_get_mapfile(char *fname, struct vma_area *vma, DIR *mfd,
 			}
 
 			if (fstat(fd, vma->vmst) < 0) {
-				pr_perror("Can't stat [%s]\n", fname);
+				pr_perror("Can't stat [%s]", fname);
 				close(fd);
 				return -1;
 			}
@@ -1276,6 +1276,10 @@ static int parse_mountinfo_ent(char *str, struct mount_info *new, char **fsname)
 		goto err;
 
 	cure_path(new->source);
+
+	new->fsname = xstrdup(*fsname);
+	if (!new->fsname)
+		goto err;
 
 	/*
 	 * The kernel reports "subtypes" sometimes and the valid
@@ -2238,7 +2242,7 @@ int parse_task_cgroup(int pid, struct parasite_dump_cgroup_args *args, struct li
 
 	f = fmemopen(args->contents, strlen(args->contents), "r");
 	if (!f) {
-		pr_perror("couldn't fmemopen cgroup buffer:\n%s\n", args->contents);
+		pr_perror("couldn't fmemopen cgroup buffer:\n%s", args->contents);
 		return -1;
 	}
 
@@ -2302,6 +2306,7 @@ void put_ctls(struct list_head *l)
 		xfree(c->path);
 		xfree(c);
 	}
+	INIT_LIST_HEAD(l);
 }
 
 /* Parse and create all the real controllers. This does not include things with

@@ -75,17 +75,16 @@ static int tcp_repair_on(int fd)
 	return ret;
 }
 
-static int refresh_inet_sk(struct inet_sk_desc *sk)
+static int refresh_inet_sk(struct inet_sk_desc *sk, struct tcp_info *ti)
 {
 	int size;
-	struct tcp_info info;
 
-	if (dump_opt(sk->rfd, SOL_TCP, TCP_INFO, &info)) {
+	if (dump_opt(sk->rfd, SOL_TCP, TCP_INFO, ti)) {
 		pr_perror("Failed to obtain TCP_INFO");
 		return -1;
 	}
 
-	switch (info.tcpi_state) {
+	switch (ti->tcpi_state) {
 	case TCP_ESTABLISHED:
 	case TCP_CLOSE:
 		break;
@@ -145,11 +144,6 @@ static int tcp_repair_establised(int fd, struct inet_sk_desc *sk)
 		goto err3;
 
 	list_add_tail(&sk->rlist, &cpt_tcp_repair_sockets);
-
-	ret = refresh_inet_sk(sk);
-	if (ret < 0)
-		goto err1;
-
 	return 0;
 
 err3:
@@ -268,31 +262,25 @@ err_recv:
 	goto err_buf;
 }
 
-static int tcp_stream_get_options(int sk, TcpStreamEntry *tse)
+static int tcp_stream_get_options(int sk, struct tcp_info *ti, TcpStreamEntry *tse)
 {
 	int ret;
 	socklen_t auxl;
-	struct tcp_info ti;
 	int val;
-
-	auxl = sizeof(ti);
-	ret = getsockopt(sk, SOL_TCP, TCP_INFO, &ti, &auxl);
-	if (ret < 0)
-		goto err_sopt;
 
 	auxl = sizeof(tse->mss_clamp);
 	ret = getsockopt(sk, SOL_TCP, TCP_MAXSEG, &tse->mss_clamp, &auxl);
 	if (ret < 0)
 		goto err_sopt;
 
-	tse->opt_mask = ti.tcpi_options;
-	if (ti.tcpi_options & TCPI_OPT_WSCALE) {
-		tse->snd_wscale = ti.tcpi_snd_wscale;
-		tse->rcv_wscale = ti.tcpi_rcv_wscale;
+	tse->opt_mask = ti->tcpi_options;
+	if (ti->tcpi_options & TCPI_OPT_WSCALE) {
+		tse->snd_wscale = ti->tcpi_snd_wscale;
+		tse->rcv_wscale = ti->tcpi_rcv_wscale;
 		tse->has_rcv_wscale = true;
 	}
 
-	if (ti.tcpi_options & TCPI_OPT_TIMESTAMPS) {
+	if (ti->tcpi_options & TCPI_OPT_TIMESTAMPS) {
 		auxl = sizeof(val);
 		ret = getsockopt(sk, SOL_TCP, TCP_TIMESTAMP, &val, &auxl);
 		if (ret < 0)
@@ -304,9 +292,9 @@ static int tcp_stream_get_options(int sk, TcpStreamEntry *tse)
 
 	pr_info("\toptions: mss_clamp %x wscale %x tstamp %d sack %d\n",
 			(int)tse->mss_clamp,
-			ti.tcpi_options & TCPI_OPT_WSCALE ? (int)tse->snd_wscale : -1,
-			ti.tcpi_options & TCPI_OPT_TIMESTAMPS ? 1 : 0,
-			ti.tcpi_options & TCPI_OPT_SACK ? 1 : 0);
+			ti->tcpi_options & TCPI_OPT_WSCALE ? (int)tse->snd_wscale : -1,
+			ti->tcpi_options & TCPI_OPT_TIMESTAMPS ? 1 : 0,
+			ti->tcpi_options & TCPI_OPT_SACK ? 1 : 0);
 
 	return 0;
 
@@ -318,9 +306,14 @@ err_sopt:
 static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 {
 	int ret, aux;
+	struct tcp_info ti;
 	struct cr_img *img;
 	TcpStreamEntry tse = TCP_STREAM_ENTRY__INIT;
 	char *in_buf, *out_buf;
+
+	ret = refresh_inet_sk(sk, &ti);
+	if (ret < 0)
+		goto err_r;
 
 	/*
 	 * Read queue
@@ -351,7 +344,7 @@ static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 	 */
 
 	pr_info("Reading options for socket\n");
-	ret = tcp_stream_get_options(sk->rfd, &tse);
+	ret = tcp_stream_get_options(sk->rfd, &ti, &tse);
 	if (ret < 0)
 		goto err_opt;
 
@@ -408,6 +401,7 @@ err_opt:
 err_out:
 	xfree(in_buf);
 err_in:
+err_r:
 	return ret;
 }
 
@@ -473,9 +467,10 @@ static int __send_tcp_queue(int sk, int queue, u32 len, struct cr_img *img)
 	if (read_img_buf(img, buf, len) < 0)
 		goto err;
 
-	max_chunk = (queue == TCP_RECV_QUEUE ? kdat.tcp_max_rshare : len);
+	max_chunk = len;
 	off = 0;
-	while (len) {
+
+	do {
 		int chunk = len;
 
 		if (chunk > max_chunk)
@@ -483,14 +478,19 @@ static int __send_tcp_queue(int sk, int queue, u32 len, struct cr_img *img)
 
 		ret = send(sk, buf + off, chunk, 0);
 		if (ret <= 0) {
-			if ((queue == TCP_RECV_QUEUE) && (max_chunk > 1024) && (errno == ENOMEM)) {
+			if (max_chunk > 1024) {
 				/*
+				 * Kernel not only refuses the whole chunk,
+				 * but refuses to split it into pieces too.
+				 *
 				 * When restoring recv queue in repair mode
 				 * kernel doesn't try hard and just allocates
 				 * a linear skb with the size we pass to the
 				 * system call. Thus, if the size is too big
 				 * for slab allocator, the send just fails
-				 * with ENOMEM. Try smaller chunk, hopefully
+				 * with ENOMEM.
+				 *
+				 * In any case -- try smaller chunk, hopefully
 				 * there's still enough memory in the system.
 				 */
 				max_chunk >>= 1;
@@ -503,7 +503,7 @@ static int __send_tcp_queue(int sk, int queue, u32 len, struct cr_img *img)
 		}
 		off += ret;
 		len -= ret;
-	}
+	} while (len);
 
 	err = 0;
 err:

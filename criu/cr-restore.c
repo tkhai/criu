@@ -76,6 +76,8 @@
 #include "seccomp.h"
 #include "bitmap.h"
 #include "fault-injection.h"
+#include "sk-queue.h"
+
 #include "parasite-syscall.h"
 
 #include "protobuf.h"
@@ -178,7 +180,43 @@ static struct collect_image_info *cinfos[] = {
 	&ext_file_cinfo,
 	&timerfd_cinfo,
 	&file_locks_cinfo,
+	&pipe_data_cinfo,
+	&fifo_data_cinfo,
+	&sk_queues_cinfo,
 };
+
+struct post_prepare_cb {
+	struct list_head list;
+	int (*actor)(void *data);
+	void *data;
+};
+
+static struct list_head post_prepare_cbs = LIST_HEAD_INIT(post_prepare_cbs);
+
+int add_post_prepare_cb(int (*actor)(void *data), void *data)
+{
+	struct post_prepare_cb *cb;
+
+	cb = xmalloc(sizeof(*cb));
+	if (!cb)
+		return -1;
+
+	cb->actor = actor;
+	cb->data = data;
+	list_add(&cb->list, &post_prepare_cbs);
+	return 0;
+}
+
+static int run_post_prepare(void)
+{
+	struct post_prepare_cb *o;
+
+	list_for_each_entry(o, &post_prepare_cbs, list) {
+		if (o->actor(o->data))
+			return -1;
+	}
+	return 0;
+}
 
 static int root_prepare_shared(void)
 {
@@ -205,13 +243,6 @@ static int root_prepare_shared(void)
 			return -1;
 	}
 
-	if (collect_pipes())
-		return -1;
-	if (collect_fifo())
-		return -1;
-	if (collect_unix_sockets())
-		return -1;
-
 	if (tty_verify_active_pairs())
 		return -1;
 
@@ -235,17 +266,11 @@ static int root_prepare_shared(void)
 	if (ret < 0)
 		goto err;
 
-	mark_pipe_master();
-
-	ret = tty_setup_slavery();
-	if (ret)
-		goto err;
-
-	ret = resolve_unix_peers();
-	if (ret)
-		goto err;
-
 	ret = prepare_restorer_blob();
+	if (ret)
+		goto err;
+
+	ret = run_post_prepare();
 	if (ret)
 		goto err;
 
@@ -316,6 +341,7 @@ static int map_private_vma(struct vma_area *vma, void **tgt_addr,
 
 	size = vma_entry_len(vma->e);
 	if (paddr == NULL) {
+		int flag = 0;
 		/*
 		 * The respective memory area was NOT found in the parent.
 		 * Map a new one.
@@ -323,9 +349,16 @@ static int map_private_vma(struct vma_area *vma, void **tgt_addr,
 		pr_info("Map 0x%016"PRIx64"-0x%016"PRIx64" 0x%016"PRIx64" vma\n",
 			vma->e->start, vma->e->end, vma->e->pgoff);
 
+		/*
+		 * Restore AIO ring buffer content to temporary anonymous area.
+		 * This will be placed in io_setup'ed AIO in restore_aio_ring().
+		 */
+		if (vma_entry_is(vma->e, VMA_AREA_AIORING))
+			flag |= MAP_ANONYMOUS;
+
 		addr = mmap(*tgt_addr, size,
 				vma->e->prot | PROT_WRITE,
-				vma->e->flags | MAP_FIXED,
+				vma->e->flags | MAP_FIXED | flag,
 				vma->e->fd, vma->e->pgoff);
 
 		if (addr == MAP_FAILED) {
@@ -971,6 +1004,47 @@ static inline int sig_fatal(int sig)
 struct task_entries *task_entries;
 static unsigned long task_entries_pos;
 
+static int wait_on_helpers_zombies(void)
+{
+	struct pstree_item *pi;
+	sigset_t blockmask, oldmask;
+
+	sigemptyset(&blockmask);
+	sigaddset(&blockmask, SIGCHLD);
+
+	if (sigprocmask(SIG_BLOCK, &blockmask, &oldmask) == -1) {
+		pr_perror("Can not set mask of blocked signals");
+		return -1;
+	}
+
+	list_for_each_entry(pi, &current->children, sibling) {
+		pid_t pid = pi->pid.virt;
+		int status;
+
+		switch (pi->state) {
+		case TASK_DEAD:
+			if (waitid(P_PID, pid, NULL, WNOWAIT | WEXITED) < 0) {
+				pr_perror("Wait on %d zombie failed", pid);
+				return -1;
+			}
+			break;
+		case TASK_HELPER:
+			if (waitpid(pid, &status, 0) != pid) {
+				pr_perror("waitpid for helper %d failed", pid);
+				return -1;
+			}
+			break;
+		}
+	}
+
+	if (sigprocmask(SIG_SETMASK, &oldmask, NULL) == -1) {
+		pr_perror("Can not unset mask of blocked signals");
+		BUG();
+	}
+
+	return 0;
+}
+
 static int restore_one_zombie(CoreEntry *core)
 {
 	int exit_code = core->tc->exit_code;
@@ -1056,7 +1130,12 @@ static int restore_one_task(int pid, CoreEntry *core)
 		ret = restore_one_zombie(core);
 	else if (current->state == TASK_HELPER) {
 		restore_finish_stage(CR_STATE_RESTORE);
-		ret = 0;
+		if (wait_on_helpers_zombies()) {
+			pr_err("failed to wait on helpers and zombies\n");
+			ret = -1;
+		} else {
+			ret = 0;
+		}
 	} else {
 		pr_err("Unknown state in code %d\n", (int)core->tc->task_state);
 		ret = -1;
@@ -1212,7 +1291,7 @@ static inline int fork_with_pid(struct pstree_item *item)
 	 * move_in_cgroup(), so drop this flag here as well.
 	 */
 	ret = clone(restore_task_with_children, ca.stack_ptr,
-		    (ca.clone_flags & (~CLONE_NEWNET | ~CLONE_NEWCGROUP)) | SIGCHLD, &ca);
+		    (ca.clone_flags & ~(CLONE_NEWNET | CLONE_NEWCGROUP)) | SIGCHLD, &ca);
 
 	if (ret < 0) {
 		pr_perror("Can't fork for %d", pid);
@@ -1304,7 +1383,8 @@ err:
 	if (exit)
 		pr_err("%d exited, status=%d\n", pid, status);
 	else
-		pr_err("%d killed by signal %d\n", pid, status);
+		pr_err("%d killed by signal %d: %s\n",
+			pid, status, strsignal(status));
 
 	futex_abort_and_wake(&task_entries->nr_in_progress);
 }
@@ -1563,11 +1643,22 @@ static int restore_task_with_children(void *_arg)
 			goto err;
 	}
 
-	/* Restore root task */
-	if (current->parent == NULL) {
-		if (restore_finish_stage(CR_STATE_RESTORE_NS) < 0)
+	/* Wait prepare_userns */
+	if (current->parent == NULL &&
+            restore_finish_stage(CR_STATE_RESTORE_NS) < 0)
 			goto err;
 
+	/*
+	 * Call this _before_ forking to optimize cgroups
+	 * restore -- if all tasks live in one set of cgroups
+	 * we will only move the root one there, others will
+	 * just have it inherited.
+	 */
+	if (prepare_task_cgroup(current) < 0)
+		goto err;
+
+	/* Restore root task */
+	if (current->parent == NULL) {
 		pr_info("Calling restore_sid() for init\n");
 		restore_sid();
 
@@ -1593,15 +1684,6 @@ static int restore_task_with_children(void *_arg)
 		goto err;
 
 	if (prepare_mappings())
-		goto err;
-
-	/*
-	 * Call this _before_ forking to optimize cgroups
-	 * restore -- if all tasks live in one set of cgroups
-	 * we will only move the root one there, others will
-	 * just have it inherited.
-	 */
-	if (prepare_task_cgroup(current) < 0)
 		goto err;
 
 	if (prepare_sigactions() < 0)
@@ -1786,6 +1868,9 @@ static int clear_breakpoints()
 {
 	struct pstree_item *item;
 	int ret = 0, i;
+
+	if (fault_injected(FI_NO_BREAKPOINTS))
+		return 0;
 
 	for_each_pstree_item(item) {
 		if (!task_alive(item))
@@ -2094,6 +2179,10 @@ static int restore_root_task(struct pstree_item *init)
 	finalize_restore_detach(ret);
 
 	write_stats(RESTORE_STATS);
+
+	ret = run_scripts(ACT_POST_RESUME);
+	if (ret != 0)
+		pr_err("Post-resume script ret code %d\n", ret);
 
 	if (!opts.restore_detach && !opts.exec_cmd)
 		wait(NULL);
@@ -2659,7 +2748,7 @@ static int prepare_rlimits(int pid, CoreEntry *core)
 {
 	int i;
 	TaskRlimitsEntry *rls = core->tc->rlimits;
-	struct rlimit *r;
+	struct rlimit64 *r;
 
 	rlims_cpos = rst_mem_align_cpos(RM_PRIVATE);
 
